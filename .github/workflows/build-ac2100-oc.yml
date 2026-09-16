@@ -1,0 +1,220 @@
+name: Build Xiaomi AC2100 1100MHz Firmware
+
+run-name: AC2100 1100 MHz build #${{ github.run_number }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: Create a GitHub Release after a successful build
+        required: true
+        default: true
+        type: boolean
+      prerelease:
+        description: Mark the GitHub Release as a prerelease
+        required: true
+        default: true
+        type: boolean
+      release_tag:
+        description: Optional release tag (leave empty for an automatic tag)
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ac2100-1100mhz-firmware
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and publish firmware
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Check out the overclock branch
+        uses: actions/checkout@v4
+        with:
+          ref: ac2100-24.10-oc
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ack antlr3 asciidoc autoconf automake autopoint binutils bison \
+            build-essential bzip2 ccache clang cmake cpio curl \
+            device-tree-compiler ecj fastjar file flex gawk gettext \
+            gcc-multilib g++-multilib git gnutls-dev gperf haveged help2man \
+            intltool jq lib32gcc-s1 libc6-dev-i386 libelf-dev \
+            libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev \
+            libncurses-dev libpython3-dev libreadline-dev libssl-dev libtool \
+            libyaml-dev libz-dev lld llvm lrzsz mkisofs ninja-build p7zip \
+            p7zip-full patch pkgconf python3 python3-docutils python3-pip \
+            python3-ply python3-pyelftools qemu-utils re2c rsync scons \
+            squashfs-tools subversion swig texinfo uglifyjs unzip upx-ucl \
+            wget xmlto xxd zlib1g-dev zstd
+          sudo apt-get clean
+
+      - name: Cache downloads and compiler objects
+        uses: actions/cache@v4
+        with:
+          path: |
+            dl
+            .ccache
+          key: ${{ runner.os }}-ac2100-24.10-${{ hashFiles('feeds.conf.default', 'configs/xiaomi-ac2100-1100mhz.config') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ac2100-24.10-${{ hashFiles('feeds.conf.default', 'configs/xiaomi-ac2100-1100mhz.config') }}-
+            ${{ runner.os }}-ac2100-24.10-
+
+      - name: Update and install feeds
+        run: |
+          set -euxo pipefail
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Generate the AC2100 configuration
+        run: |
+          set -euxo pipefail
+          cp configs/xiaomi-ac2100-1100mhz.config .config
+          make defconfig
+          grep -q '^CONFIG_TARGET_ramips_mt7621_DEVICE_xiaomi_mi-router-ac2100=y$' .config
+          grep -q '^CONFIG_CCACHE=y$' .config
+          grep -q 'mediatek,cpu-overclock-frequency = <1100000000>;' \
+            target/linux/ramips/dts/mt7621_xiaomi_mi-router-ac2100.dts
+          grep -q 'MT7621_CPU_PLL_1100_CONFIG' \
+            target/linux/ramips/patches-6.6/325-clk-ralink-mt7621-add-opt-in-cpu-overclock.patch
+          ./scripts/diffconfig.sh
+
+      - name: Download source archives
+        run: |
+          set -euxo pipefail
+          if ! make download -j"$(nproc)"; then
+            make download -j1 V=s
+          fi
+
+      - name: Build firmware
+        run: |
+          set -euxo pipefail
+          if ! make -j"$(nproc)" 2>&1 | tee build.log; then
+            make -j1 V=s 2>&1 | tee -a build.log
+          fi
+
+      - name: Verify firmware and overclock data
+        run: |
+          set -euxo pipefail
+          target_dir="bin/targets/ramips/mt7621"
+          test -d "$target_dir"
+          compgen -G "$target_dir/*xiaomi_mi-router-ac2100*sysupgrade.bin" >/dev/null
+          grep -q 'xiaomi,mi-router-ac2100' "$target_dir/profiles.json"
+          (cd "$target_dir" && sha256sum -c sha256sums)
+
+          driver="$(find build_dir -path '*/linux-*/drivers/clk/ralink/clk-mt7621.c' -print -quit)"
+          dtb="$(find build_dir -name 'image-mt7621_xiaomi_mi-router-ac2100.dtb' -print -quit)"
+          test -n "$driver"
+          test -n "$dtb"
+          grep -q 'MT7621_CPU_PLL_1100_CONFIG' "$driver"
+          dtc -I dtb -O dts "$dtb" > /tmp/xiaomi-ac2100-built.dts
+          grep -Eq 'mediatek,cpu-overclock-frequency = <(0x)?4190ab00>;' \
+            /tmp/xiaomi-ac2100-built.dts
+
+      - name: Collect release files
+        run: |
+          set -euxo pipefail
+          mkdir -p release
+          find bin/targets/ramips/mt7621 -maxdepth 1 -type f \
+            -exec cp -v '{}' release/ ';'
+          ls -lh release
+
+      - name: Prepare release metadata
+        id: metadata
+        env:
+          REQUESTED_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          tag="$REQUESTED_TAG"
+          if [[ -z "$tag" ]]; then
+            tag="ac2100-24.10-oc-r${GITHUB_RUN_NUMBER}"
+          fi
+          if [[ ! "$tag" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo "Invalid release tag: $tag" >&2
+            exit 1
+          fi
+
+          sysupgrade="$(find release -maxdepth 1 -name '*sysupgrade.bin' -print -quit)"
+          sysupgrade_sha="$(sha256sum "$sysupgrade" | awk '{print $1}')"
+          build_time="$(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "sysupgrade_sha=$sysupgrade_sha" >> "$GITHUB_OUTPUT"
+
+          cat > /tmp/release-notes.md <<EOF
+          Xiaomi Mi Router AC2100 firmware built from the ac2100-24.10-oc branch.
+
+          - CPU target: 1100 MHz (MT7621 PLL setting 0x362)
+          - Source commit: ${GITHUB_SHA}
+          - Workflow run: ${GITHUB_RUN_NUMBER}
+          - Build time: ${build_time}
+          - Sysupgrade SHA-256: ${sysupgrade_sha}
+
+          Warning: This is an unofficial overclocked firmware. Keep a tested recovery
+          method available and validate cold boot and sustained-load stability before
+          relying on it in production.
+          EOF
+
+          {
+            echo "## Xiaomi AC2100 1100 MHz firmware"
+            echo "- Release tag: \`$tag\`"
+            echo "- Source commit: \`${GITHUB_SHA}\`"
+            echo "- Sysupgrade SHA-256: \`$sysupgrade_sha\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Actions artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: immortalwrt-ac2100-1100mhz-${{ github.run_number }}
+          path: release/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Create GitHub Release
+        if: ${{ inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.metadata.outputs.tag }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euxo pipefail
+          title="Xiaomi AC2100 1100 MHz - ${RELEASE_TAG}"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" release/* --clobber
+          else
+            release_flags=()
+            if [[ "$PRERELEASE" == "true" ]]; then
+              release_flags+=(--prerelease)
+            fi
+            gh release create "$RELEASE_TAG" release/* \
+              --target "$GITHUB_SHA" \
+              --title "$title" \
+              --notes-file /tmp/release-notes.md \
+              "${release_flags[@]}"
+          fi
+
+      - name: Upload diagnostics after a failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: immortalwrt-ac2100-build-diagnostics-${{ github.run_number }}
+          path: |
+            .config
+            build.log
+          if-no-files-found: ignore
+          retention-days: 7

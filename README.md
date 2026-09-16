@@ -2,6 +2,10 @@
 
 # Project ImmortalWrt
 
+> This fork provides a Xiaomi Mi Router AC2100 1100 MHz build. See
+> [README-AC2100-OC.md](README-AC2100-OC.md) for GitHub Actions build and
+> release instructions.
+
 ImmortalWrt is a fork of [OpenWrt](https://openwrt.org), with more packages ported, more devices supported, default optimized profiles and localization modifications for mainland China users.<br/>
 Compared to upstream, we allow to use (non-upstreamable) modifications/hacks to provide better feature/performance/support.
 
