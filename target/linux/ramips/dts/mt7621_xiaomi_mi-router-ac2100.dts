@@ -44,3 +44,7 @@
 		};
 	};
 };
+
+&sysc {
+	mediatek,cpu-overclock-frequency = <1100000000>;
+};

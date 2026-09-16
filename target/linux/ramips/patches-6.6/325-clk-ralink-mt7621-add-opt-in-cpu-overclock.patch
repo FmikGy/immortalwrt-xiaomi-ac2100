@@ -1,0 +1,218 @@
+Subject: [PATCH] clk: ralink: mt7621: add opt-in 1.1 GHz CPU clock
+
+Allow a board DTS to request the known 0x362 CPU PLL setting during early
+clock initialization. Restrict the change to an explicit 1.1 GHz request
+and verify that the SoC is still using the stock 880 MHz PLL setup before
+touching the register.
+
+This is intentionally a fixed boot-time setting rather than a runtime
+CPUFreq interface. The MT7621 bus clock rises from 220 MHz to 275 MHz with
+the CPU clock, so boards must opt in individually.
+
+---
+--- a/Documentation/devicetree/bindings/clock/mediatek,mt7621-sysc.yaml
++++ b/Documentation/devicetree/bindings/clock/mediatek,mt7621-sysc.yaml
+@@ -53,6 +53,15 @@ properties:
+     description:
+       phandle of syscon used to control memory registers
+ 
++  mediatek,cpu-overclock-frequency:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    const: 1100000000
++    description:
++      Optional board-level opt-in to change the CPU PLL from the stock
++      880 MHz rate to 1.1 GHz during early clock initialization. This also
++      raises the bus clock from 220 MHz to 275 MHz and must only be enabled
++      on hardware validated at these rates.
++
+   clock-output-names:
+     maxItems: 8
+ 
+--- a/drivers/clk/ralink/clk-mt7621.c
++++ b/drivers/clk/ralink/clk-mt7621.c
+@@ -8,7 +8,9 @@
+ #include <linux/bitops.h>
+ #include <linux/clk-provider.h>
+ #include <linux/clk.h>
++#include <linux/delay.h>
+ #include <linux/mfd/syscon.h>
++#include <linux/of.h>
+ #include <linux/platform_device.h>
+ #include <linux/regmap.h>
+ #include <linux/reset-controller.h>
+@@ -31,6 +33,12 @@
+ #define CUR_CPU_FFRAC_MASK		GENMASK(4, 0)
+ #define CPU_PLL_PREDIV_MASK		GENMASK(13, 12)
+ #define CPU_PLL_FBDIV_MASK		GENMASK(10, 4)
++#define CPU_PLL_CONFIG_MASK		GENMASK(10, 0)
++
++#define MT7621_CPU_STOCK_RATE		880000000U
++#define MT7621_CPU_OVERCLOCK_RATE	1100000000U
++#define MT7621_CPU_PLL_STOCK_FBDIV	43U
++#define MT7621_CPU_PLL_1100_CONFIG	0x362U
+ 
+ struct mt7621_clk_priv {
+ 	struct regmap *sysc;
+@@ -348,6 +356,153 @@
+ 	return ret;
+ }
+ 
++static int __init mt7621_read_cpu_rate(struct mt7621_clk_priv *priv,
++				       unsigned long *rate)
++{
++	static const u32 prediv_tbl[] = { 0, 1, 2, 2 };
++	u32 syscfg, xtal_sel, clkcfg, clk_sel, curclk, ffiv, ffrac;
++	u32 pll, prediv, fbdiv;
++	unsigned long xtal_clk, cpu_clk;
++	int ret;
++
++	ret = regmap_read(priv->sysc, SYSC_REG_SYSTEM_CONFIG0, &syscfg);
++	if (ret)
++		return ret;
++
++	xtal_sel = FIELD_GET(XTAL_MODE_SEL_MASK, syscfg);
++	if (xtal_sel <= 2)
++		xtal_clk = 20000000;
++	else if (xtal_sel <= 5)
++		xtal_clk = 40000000;
++	else
++		xtal_clk = 25000000;
++
++	ret = regmap_read(priv->sysc, SYSC_REG_CLKCFG0, &clkcfg);
++	if (ret)
++		return ret;
++
++	clk_sel = FIELD_GET(CPU_CLK_SEL_MASK, clkcfg);
++
++	ret = regmap_read(priv->sysc, SYSC_REG_CUR_CLK_STS, &curclk);
++	if (ret)
++		return ret;
++
++	ffiv = FIELD_GET(CUR_CPU_FDIV_MASK, curclk);
++	ffrac = FIELD_GET(CUR_CPU_FFRAC_MASK, curclk);
++	if (!ffiv)
++		return -EINVAL;
++
++	switch (clk_sel) {
++	case 0:
++		cpu_clk = 500000000;
++		break;
++	case 1:
++		ret = regmap_read(priv->memc, MEMC_REG_CPU_PLL, &pll);
++		if (ret)
++			return ret;
++
++		fbdiv = FIELD_GET(CPU_PLL_FBDIV_MASK, pll);
++		prediv = FIELD_GET(CPU_PLL_PREDIV_MASK, pll);
++		cpu_clk = ((fbdiv + 1) * xtal_clk) >> prediv_tbl[prediv];
++		break;
++	default:
++		cpu_clk = xtal_clk;
++	}
++
++	*rate = cpu_clk / ffiv * ffrac;
++
++	return 0;
++}
++
++static void __init mt7621_apply_cpu_overclock(struct device_node *node,
++					       struct mt7621_clk_priv *priv)
++{
++	unsigned long old_rate, new_rate;
++	u32 target, clkcfg, pll, new_pll, readback;
++	unsigned int i;
++	int ret;
++
++	ret = of_property_read_u32(node, "mediatek,cpu-overclock-frequency",
++				   &target);
++	if (ret)
++		return;
++
++	if (target != MT7621_CPU_OVERCLOCK_RATE) {
++		pr_warn("%pOF: unsupported CPU overclock rate %u Hz\n",
++			node, target);
++		return;
++	}
++
++	ret = regmap_read(priv->sysc, SYSC_REG_CLKCFG0, &clkcfg);
++	if (ret) {
++		pr_warn("%pOF: failed to read CPU clock source: %d\n",
++			node, ret);
++		return;
++	}
++
++	if (FIELD_GET(CPU_CLK_SEL_MASK, clkcfg) != 1) {
++		pr_warn("%pOF: CPU is not using the CPU PLL; skipping overclock\n",
++			node);
++		return;
++	}
++
++	ret = regmap_read(priv->memc, MEMC_REG_CPU_PLL, &pll);
++	if (ret) {
++		pr_warn("%pOF: failed to read CPU PLL: %d\n", node, ret);
++		return;
++	}
++
++	if (FIELD_GET(CPU_PLL_FBDIV_MASK, pll) !=
++	    MT7621_CPU_PLL_STOCK_FBDIV) {
++		pr_warn("%pOF: CPU PLL is not at the stock divider (0x%08x); skipping overclock\n",
++			node, pll);
++		return;
++	}
++
++	ret = mt7621_read_cpu_rate(priv, &old_rate);
++	if (ret || old_rate != MT7621_CPU_STOCK_RATE) {
++		pr_warn("%pOF: CPU rate is not the expected 880 MHz; skipping overclock\n",
++			node);
++		return;
++	}
++
++	new_pll = (pll & ~CPU_PLL_CONFIG_MASK) |
++		  MT7621_CPU_PLL_1100_CONFIG;
++	ret = regmap_update_bits(priv->memc, MEMC_REG_CPU_PLL,
++				 CPU_PLL_CONFIG_MASK,
++				 MT7621_CPU_PLL_1100_CONFIG);
++	if (ret) {
++		pr_err("%pOF: failed to set CPU PLL: %d\n", node, ret);
++		return;
++	}
++
++	for (i = 0; i < 1024; i++)
++		cpu_relax();
++
++	ret = regmap_read(priv->memc, MEMC_REG_CPU_PLL, &readback);
++	if (ret || (readback & CPU_PLL_CONFIG_MASK) !=
++		   MT7621_CPU_PLL_1100_CONFIG) {
++		pr_err("%pOF: CPU PLL readback failed (0x%08x)\n",
++		       node, ret ? 0 : readback);
++		return;
++	}
++
++	ret = mt7621_read_cpu_rate(priv, &new_rate);
++	if (ret) {
++		pr_warn("%pOF: CPU PLL changed but the new rate could not be read: %d\n",
++			node, ret);
++		return;
++	}
++
++	if (new_rate != target)
++		pr_warn("%pOF: CPU PLL changed to 0x%08x, calculated rate is %lu MHz instead of 1100 MHz\n",
++			node, readback, new_rate / 1000000);
++	else
++		pr_info("%pOF: CPU overclocked %lu MHz -> %lu MHz (PLL 0x%08x -> 0x%08x, bus %lu MHz)\n",
++			node, old_rate / 1000000, new_rate / 1000000,
++			pll, new_pll, new_rate / 4000000);
++}
++
+ static void __init mt7621_clk_init(struct device_node *node)
+ {
+ 	struct mt7621_clk_priv *priv;
+@@ -370,6 +525,8 @@ static void __init mt7621_clk_init(struc
+ 		goto free_clk_priv;
+ 	}
+ 
++	mt7621_apply_cpu_overclock(node, priv);
++
+ 	count = ARRAY_SIZE(mt7621_clks_base) +
+ 		ARRAY_SIZE(mt7621_fixed_clks) + ARRAY_SIZE(mt7621_gates);
+ 	clk_data = kzalloc(struct_size(clk_data, hws, count), GFP_KERNEL);
