@@ -292,6 +292,8 @@ jobs:
 
           Both variants use the 1100 MHz MT7621 CPU PLL setting (0x362) and include:
 
+          - LAN subnet: 192.168.31.0/24
+          - Router / LuCI address: 192.168.31.1
           - OpenSSH server with root/password login enabled; Dropbear removed
           - OpenSSH SFTP server
           - WireGuard with LuCI protocol support
@@ -320,6 +322,8 @@ jobs:
             echo "## Xiaomi AC2100 1100 MHz firmware"
             echo "- Release tag: \`$tag\`"
             echo "- Source commit: \`${GITHUB_SHA}\`"
+            echo "- LAN subnet: \`192.168.31.0/24\`"
+            echo "- Router / LuCI address: \`192.168.31.1\`"
             echo "- Wi-Fi sysupgrade SHA-256: \`$wifi_sha\`"
             echo "- No-Wi-Fi sysupgrade SHA-256: \`$nowifi_sha\`"
           } >> "$GITHUB_STEP_SUMMARY"
