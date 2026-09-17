@@ -30,6 +30,7 @@ Both variants also share `configs/ac2100-common.config` and include:
 - [`luci-theme-aurora`](https://github.com/eamonxg/luci-theme-aurora)
 - runtime opkg feeds switched to the [PKU ImmortalWrt mirror](https://mirrors.pku.edu.cn/immortalwrt/)
 
+The default LAN is `192.168.31.0/24`, with the router at `192.168.31.1`.
 OpenSSH password login requires a non-empty root password on the router.
 The opkg mirror switch runs on first boot and keeps a `.bak` copy of
 `/etc/opkg/distfeeds.conf`.
