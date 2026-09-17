@@ -19,6 +19,21 @@ Each run builds and verifies two variants in parallel:
 - `nowifi` keeps LuCI but removes the wireless drivers, firmware, `wpad`, `iw`,
   Wi-Fi scripts and the wireless regulatory database.
 
+Both variants also share `configs/ac2100-common.config` and include:
+
+- OpenSSH server replacing Dropbear
+- root login and password authentication enabled for OpenSSH
+- OpenSSH SFTP server
+- WireGuard kernel/tools plus `luci-proto-wireguard`
+- `luci-app-ttyd`
+- `luci-app-upnp`
+- [`luci-theme-aurora`](https://github.com/eamonxg/luci-theme-aurora)
+- runtime opkg feeds switched to the [PKU ImmortalWrt mirror](https://mirrors.pku.edu.cn/immortalwrt/)
+
+OpenSSH password login requires a non-empty root password on the router.
+The opkg mirror switch runs on first boot and keeps a `.bak` copy of
+`/etc/opkg/distfeeds.conf`.
+
 When no release tag is supplied, the workflow uses
 `ac2100-24.10-oc-r<run-number>`. Every successful build is retained as an
 Actions artifact for 14 days. Published releases contain both variants, their

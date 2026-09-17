@@ -77,9 +77,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: dl
-          key: ${{ runner.os }}-ac2100-24.10-downloads-${{ hashFiles('feeds.conf.default', 'configs/xiaomi-ac2100-1100mhz*.config') }}-${{ github.sha }}
+          key: ${{ runner.os }}-ac2100-24.10-downloads-${{ hashFiles('feeds.conf.default', 'configs/xiaomi-ac2100-1100mhz*.config', 'configs/ac2100-common.config') }}-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-ac2100-24.10-downloads-${{ hashFiles('feeds.conf.default', 'configs/xiaomi-ac2100-1100mhz*.config') }}-
+            ${{ runner.os }}-ac2100-24.10-downloads-${{ hashFiles('feeds.conf.default', 'configs/xiaomi-ac2100-1100mhz*.config', 'configs/ac2100-common.config') }}-
             ${{ runner.os }}-ac2100-24.10-downloads-
 
       - name: Cache compiler objects
@@ -96,15 +96,33 @@ jobs:
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
+      - name: Add Aurora theme
+        run: |
+          set -euxo pipefail
+          rm -rf package/luci-theme-aurora
+          git clone --depth=1 --single-branch --branch master \
+            https://github.com/eamonxg/luci-theme-aurora.git \
+            package/luci-theme-aurora
+
       - name: Generate the AC2100 configuration
         env:
           BUILD_CONFIG: ${{ matrix.config }}
         run: |
           set -euxo pipefail
           cp "$BUILD_CONFIG" .config
+          cat configs/ac2100-common.config >> .config
           make defconfig
           grep -q '^CONFIG_TARGET_ramips_mt7621_DEVICE_xiaomi_mi-router-ac2100=y$' .config
           grep -q '^CONFIG_CCACHE=y$' .config
+          grep -q '^# CONFIG_PACKAGE_dropbear is not set$' .config
+          grep -q '^CONFIG_PACKAGE_openssh-server=y$' .config
+          grep -q '^CONFIG_PACKAGE_openssh-sftp-server=y$' .config
+          grep -q '^CONFIG_PACKAGE_kmod-wireguard=y$' .config
+          grep -q '^CONFIG_PACKAGE_wireguard-tools=y$' .config
+          grep -q '^CONFIG_PACKAGE_luci-proto-wireguard=y$' .config
+          grep -q '^CONFIG_PACKAGE_luci-app-ttyd=y$' .config
+          grep -q '^CONFIG_PACKAGE_luci-app-upnp=y$' .config
+          grep -q '^CONFIG_PACKAGE_luci-theme-aurora=y$' .config
           grep -q 'mediatek,cpu-overclock-frequency = <1100000000>;' \
             target/linux/ramips/dts/mt7621_xiaomi_mi-router-ac2100.dts
           grep -q 'MT7621_CPU_PLL_1100_CONFIG' \
@@ -139,12 +157,23 @@ jobs:
           manifest="$(find "$target_dir" -maxdepth 1 \
             -name '*xiaomi_mi-router-ac2100.manifest' -print -quit)"
           test -n "$manifest"
+
+          for package in \
+            openssh-server openssh-sftp-server kmod-wireguard wireguard-tools \
+            luci-proto-wireguard luci-app-ttyd luci-app-upnp luci-theme-aurora; do
+            grep -q "^${package} " "$manifest"
+          done
+          if grep -q '^dropbear ' "$manifest"; then
+            echo "Dropbear is still present even though OpenSSH should replace it" >&2
+            exit 1
+          fi
+
           if [[ "$VARIANT" == "wifi" ]]; then
             grep -q '^kmod-mt7603 ' "$manifest"
             grep -q '^kmod-mt7615-firmware ' "$manifest"
             grep -q '^wpad-openssl ' "$manifest"
           elif grep -Eq \
-            '^(hostapd-common|iw|wifi-scripts|wireless-regdb|wpad-[^ ]+|kmod-(cfg80211|mac80211|mt7[^ ]*)) ' \
+            '^(hostapd-common|iw|iwinfo|wifi-scripts|wireless-regdb|wpad-[^ ]+|kmod-(cfg80211|mac80211|mt7[^ ]*)) ' \
             "$manifest"; then
             echo "The no-Wi-Fi image still contains wireless packages" >&2
             exit 1
@@ -261,7 +290,17 @@ jobs:
           cat > /tmp/release-notes.md <<EOF
           Xiaomi Mi Router AC2100 firmware built from the ac2100-24.10-oc branch.
 
-          Both variants use the 1100 MHz MT7621 CPU PLL setting (0x362):
+          Both variants use the 1100 MHz MT7621 CPU PLL setting (0x362) and include:
+
+          - OpenSSH server with root/password login enabled; Dropbear removed
+          - OpenSSH SFTP server
+          - WireGuard with LuCI protocol support
+          - TTYD with LuCI
+          - UPnP with LuCI
+          - Aurora LuCI theme
+          - PKU ImmortalWrt mirror for runtime opkg feeds
+
+          Variant differences:
 
           - wifi: includes the MT7603 and MT7615 wireless stack
           - nowifi: removes the wireless drivers, firmware, wpad and Wi-Fi tools

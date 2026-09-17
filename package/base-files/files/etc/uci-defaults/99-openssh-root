@@ -1,0 +1,18 @@
+#!/bin/sh
+
+SSHD_CONFIG="/etc/ssh/sshd_config"
+[ -f "$SSHD_CONFIG" ] || exit 0
+
+if grep -qE '^[#[:space:]]*PermitRootLogin[[:space:]]+' "$SSHD_CONFIG"; then
+    sed -i -E 's|^[#[:space:]]*PermitRootLogin[[:space:]].*|PermitRootLogin yes|' "$SSHD_CONFIG"
+else
+    echo 'PermitRootLogin yes' >> "$SSHD_CONFIG"
+fi
+
+if grep -qE '^[#[:space:]]*PasswordAuthentication[[:space:]]+' "$SSHD_CONFIG"; then
+    sed -i -E 's|^[#[:space:]]*PasswordAuthentication[[:space:]].*|PasswordAuthentication yes|' "$SSHD_CONFIG"
+else
+    echo 'PasswordAuthentication yes' >> "$SSHD_CONFIG"
+fi
+
+exit 0
