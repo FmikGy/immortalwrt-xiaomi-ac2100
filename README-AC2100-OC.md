@@ -13,10 +13,17 @@ AC2100. The CPU target is 1100 MHz and the bus clock rises to 275 MHz.
 5. Keep **prerelease** enabled until the firmware has passed cold-boot and
    sustained-load tests on the target router.
 
+Each run builds and verifies two variants in parallel:
+
+- `wifi` includes the MT7603 and MT7615 drivers, firmware and wireless tools.
+- `nowifi` keeps LuCI but removes the wireless drivers, firmware, `wpad`, `iw`,
+  Wi-Fi scripts and the wireless regulatory database.
+
 When no release tag is supplied, the workflow uses
 `ac2100-24.10-oc-r<run-number>`. Every successful build is retained as an
-Actions artifact for 14 days. Published releases contain the firmware images,
-manifest, build information, profiles and SHA-256 checksums.
+Actions artifact for 14 days. Published releases contain both variants, their
+manifests and build information, plus per-variant and combined SHA-256 files.
+The firmware filenames contain either `wifi` or `nowifi` before the image type.
 
 Use the `sysupgrade.bin` image only when upgrading an already compatible
 OpenWrt or ImmortalWrt installation. The separate `kernel1.bin` and

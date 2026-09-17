@@ -2,7 +2,8 @@
 
 # Project ImmortalWrt
 
-> This fork provides a Xiaomi Mi Router AC2100 1100 MHz build. See
+> This fork provides Xiaomi Mi Router AC2100 1100 MHz builds with and without
+> the wireless stack. See
 > [README-AC2100-OC.md](README-AC2100-OC.md) for GitHub Actions build and
 > release instructions.
 
